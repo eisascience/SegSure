@@ -1,0 +1,15 @@
+datasets:
+  33710_32578_37826_37374_36135:
+    description: "CosMx slide with ~6-7 lymph nodes (toy dataset)"
+    atomx:
+      root: "/Volumes/Maggie2025/Work/OHSU/Estes/Projects/CosMx/MesVsPerLN_CosMx/data/33710_32578_37826_37374_36135"
+      expression: "33710_32578_37826_37374_36135_exprMat_file.csv.gz"
+      fov_positions: "33710_32578_37826_37374_36135_fov_positions_file.csv.gz"
+      metadata: "33710_32578_37826_37374_36135_metadata_file.csv.gz"
+      transcripts: "33710_32578_37826_37374_36135_tx_file.csv.gz"
+      polygons: "33710_32578_37826_37374_36135-polygons.csv.gz"
+    proseg:
+      root: "/Volumes/Maggie2025/Work/OHSU/Estes/Projects/CosMx/MesVsPerLN_CosMx/data/ProSeg"
+      h5ad: "33710_32578_37826_37374_36135_proseg-output.h5ad"
+      seurat: "33710_32578_37826_37374_36135_proseg-output.seurat.rds"
+      zarr: "33710_32578_37826_37374_36135_proseg-output.zarr"
