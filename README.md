@@ -10,14 +10,16 @@ SegSure is a modular framework for identifying spatial regions and cells where i
 2. Loading and auditing Proseg output
 3. Harmonizing coordinate and identifier systems
 4. Matching cells across segmentation methods
-5. Comparing transcript-to-cell assignments
-6. Identifying split/merge/loss events
-7. Computing interpretable disagreement metrics
+5. **Comparing molecule-level transcript-to-cell assignments** (IMPLEMENTED)
+6. **Identifying split/merge/loss events at molecule level** (IMPLEMENTED)
+7. **Computing interpretable disagreement metrics** (geometry, transcript, topology) (IMPLEMENTED)
 8. Producing spatial uncertainty maps
 9. Creating diagnostic neighborhood panels
 10. Exporting clean tables for downstream analysis
 
 **Design Philosophy:** SegSure does not ask "Which segmentation algorithm is best?" but rather "Where does segmentation become unreliable or method-dependent?" The framework treats local segmentation disagreement as a measurable property of the tissue and keeps disagreement decomposed into interpretable components.
+
+**Status:** The molecule-level analysis pipeline is now fully implemented with real (non-placeholder) functionality for matching molecules, classifying disagreement statuses, and computing geometry/transcript/topology metrics. Single-FOV analysis is operational; whole-slide scaling pending.
 
 ## Project Structure
 
@@ -32,9 +34,10 @@ SegSure/
 │
 ├── segsure/
 │   ├── __init__.py
-│   ├── io/                        # Data loading (AtoMx, Proseg)
+│   ├── io/                        # Data loading (AtoMx, Proseg, export)
 │   ├── harmonize/                 # Coordinate/ID harmonization
-│   ├── metrics/                   # Disagreement metrics
+│   ├── molecules/                 # Molecule-level tracking and classification
+│   ├── metrics/                   # Disagreement metrics (geometry, transcript, neighborhood)
 │   ├── uncertainty/               # Disagreement aggregation
 │   ├── plotting/                  # Spatial visualization
 │   └── utils/                     # Logging, validation
@@ -45,7 +48,8 @@ SegSure/
 │   ├── 02_match_cells.py
 │   ├── 03_compare_transcript_assignments.py
 │   ├── 04_compute_disagreement_metrics.py
-│   └── 05_plot_uncertainty.py
+│   ├── 05_plot_uncertainty.py
+│   └── 06_molecule_analysis.py    # NEW: Comprehensive molecule-level analysis
 │
 ├── notebooks/
 │   └── 01_segmentation_disagreement_eda.ipynb
@@ -81,7 +85,7 @@ pip install -e .
 - zarr >= 2.10
 - h5py >= 3.0
 - pyyaml >= 5.4
-- shapely >= 1.7
+- **shapely >= 1.7** (for polygon geometry metrics)
 - matplotlib >= 3.4
 - seaborn >= 0.11
 - tqdm >= 4.60
@@ -146,7 +150,34 @@ python scripts/02_match_cells.py \
 
 Output: `results/tables/cell_matches.csv`, `results/tables/cell_relationships.json`
 
-### 5. Compare Transcripts
+### 5. Analyze Molecules (Primary Analysis - NEW)
+
+```bash
+python scripts/06_molecule_analysis.py \
+  --config config/datasets.yaml \
+  --dataset-id your_dataset_id \
+  --fov-id FOV_ID \
+  --output-root results \
+  --spatial-tolerance 1.5 \
+  --verbose
+```
+
+This is the primary analysis script that performs comprehensive molecule-level disagreement analysis:
+- Matches molecules using stable IDs and spatial proximity
+- Classifies molecules into 8 interpretable status categories
+- Computes geometry, transcript, and topology disagreement metrics
+- Generates diagnostic panels
+- Exports parquet, CSV, and JSON results
+
+Output files in `results/fov_FOV_ID/tables/`:
+- `molecules_analysis.parquet` - Molecule-level results
+- `cell_level_summaries.csv` - Per-cell statistics
+- `geometry_metrics.csv` - Polygon overlap (IoU, coverage, area)
+- `neighborhood_metrics.csv` - Neighbor changes and Jaccard similarity
+- `ambiguous_matches.json` - Molecules with multiple candidate matches
+- `analysis_summary.json` - Comprehensive summary statistics
+
+### 6. Compare Transcripts (Legacy - Optional)
 
 ```bash
 python scripts/03_compare_transcript_assignments.py \
@@ -155,7 +186,7 @@ python scripts/03_compare_transcript_assignments.py \
   --output-root results
 ```
 
-### 6. Compute Disagreement Metrics
+### 7. Compute Disagreement Metrics (Legacy - Optional)
 
 ```bash
 python scripts/04_compute_disagreement_metrics.py \
@@ -166,7 +197,7 @@ python scripts/04_compute_disagreement_metrics.py \
 
 Output: Centroid distances, transcript metrics, neighborhood discord
 
-### 7. Visualize Uncertainty
+### 8. Visualize Uncertainty (Legacy - Optional)
 
 ```bash
 python scripts/05_plot_uncertainty.py \
@@ -179,24 +210,43 @@ Output: Spatial maps, distribution plots, neighborhood panels
 
 ## Disagreement Metrics
 
-SegSure computes interpretable disagreement components:
+SegSure now computes three separate categories of interpretable disagreement components:
 
-### Transcript Assignment Discord
-- **Jaccard Index**: Overlap of transcript assignments (0-1)
-- **Discord Rate**: 1 - Jaccard Index
-- **Asymmetric Discord**: Directional discordance
-- **Precision/Recall**: Per-method assignment quality
+### Molecule-Level Transcript Assignment
+
+Each molecule is classified into one of 8 statuses:
+
+- **same_matched_cell**: Molecule assigned to corresponding cells (cell correspondence validated via polygon overlap)
+- **changed_neighbor**: Molecule assigned to neighboring cells
+- **split_related**: Molecule assigned to cell involved in a split relationship (one AtoMx → multiple Proseg)
+- **merge_related**: Molecule assigned to cell involved in a merge relationship (multiple AtoMx → one Proseg)
+- **atomx_assigned_proseg_unassigned**: Detected in AtoMx but not assigned in Proseg
+- **atomx_unassigned_proseg_assigned**: Detected in Proseg but not assigned in AtoMx
+- **changed_unrelated**: Assigned to cells with no detected relationship
+- **unresolved**: Ambiguous match (multiple equally plausible candidates)
 
 ### Geometric Disagreement
-- **Centroid Distance**: Distance between segmented cell centers
-- **Polygon Overlap**: Intersection over Union (if geometries available)
-- **Boundary Disagreement**: Hausdorff-like boundary metrics
+
+Computed from polygon geometry (when available):
+- **Intersection over Union (IoU)**: Overlap fraction (0-1)
+- **Coverage fractions**: Percent of AtoMx covered by Proseg and vice versa
+- **Area metrics**: Absolute difference and ratio of cell areas
+- **Centroid displacement**: Euclidean distance between cell centers
+- **Boundary metrics**: Hausdorff distance and mean boundary distance (when Shapely available)
 
 ### Neighborhood Discord
-- **Neighbor Discord Density**: Fraction of neighbors with high discord
-- **Local Disagreement Clustering**: Spatial distribution of discord
+
+Computed from cell-cell relationships:
+- **Neighbor count**: Number of neighbors detected by each method
+- **Shared neighbors**: Neighbors present in both methods (after correspondence mapping)
+- **Gained/lost neighbors**: Method-specific neighbors
+- **Neighbor Jaccard similarity**: Overlap of mapped neighbor sets
+- **Local split density**: Fraction of neighbors involved in splits
+- **Local merge density**: Fraction of neighbors involved in merges
+- **Neighbor discord density**: Fraction of neighbors with high discord
 
 ### Cell Relationship Types
+
 - **One-to-One**: Consistent segmentation across methods
 - **Splits**: One AtoMx cell → Multiple Proseg cells
 - **Merges**: Multiple AtoMx cells → One Proseg cell
@@ -205,29 +255,71 @@ SegSure computes interpretable disagreement components:
 
 ## Output Files
 
-Results are organized in `results/`:
+Results are organized in `results/fov_FOV_ID/tables/`:
 
-### `audit/`
-- `audit_report_*.json` - Comprehensive data audit
+### Molecule-Level Data
+- `molecules_analysis.parquet` - All molecules with:
+  - Stable ID, gene, FOV, coordinates (x, y, z)
+  - Cell assignments from both methods
+  - Match method (stable_id or spatial_proximity)
+  - Classification status
+  - Spatial match distance
 
-### `harmonized/`
-- `harmonization_info.json` - Coordinate/ID mapping info
-- `atomx_metadata_harmonized.csv` - Harmonized cell metadata
+### Cell-Level Summaries
+- `cell_level_summaries.csv` - Per-cell statistics:
+  - Total molecules
+  - Consistent/changed/unresolved counts
+  - Fraction changed
+  - Breakdown by status category
 
-### `tables/`
-- `cell_matches.csv` - Matched cell pairs with distances
-- `cell_relationships.json` - Split/merge/loss classifications
-- `transcript_comparisons.csv` - Per-cell transcript agreement
-- `centroid_distances.csv` - Geometric disagreement
-- `transcript_metrics.csv` - Transcript discord metrics
-- `neighborhood_metrics.csv` - Neighborhood disagreement
+### Disagreement Metrics
+- `geometry_metrics.csv` - Polygon-based metrics (IoU, coverage, area)
+- `neighborhood_metrics.csv` - Neighbor set changes and Jaccard similarity
+- `transcript_metrics.csv` - Per-cell transcript overlap (if computed)
 
-### `spatial_maps/`
-- `uncertainty_heatmap.png` - Spatial discord map
-- `discord_distribution.png` - Distribution plots
-- `neighborhoods/` - High-discord diagnostic panels
+### Diagnostic Information
+- `ambiguous_matches.json` - Molecules with multiple candidate matches
+- `analysis_summary.json` - Comprehensive analysis summary
+- `neighborhoods/` - Diagnostic panel images (when generated)
 
-## Future Extensions
+## Molecule Matching Strategy
+
+Molecules are matched in two stages:
+
+1. **Stable ID Matching** (first priority)
+   - If a molecule has the same transcript/molecule ID in both methods
+   - And appears exactly once in each method
+   - Conservatively accepted as the same molecule
+
+2. **Spatial Proximity Matching** (fallback)
+   - For unmatched molecules, group by gene
+   - Find candidates within `spatial_tolerance` (default 1.5 μm)
+   - Single candidate → matched
+   - Multiple candidates → flagged as ambiguous
+   - No candidates → left unmatched
+
+Ambiguous matches are exported for manual review and NOT silently resolved.
+
+## Current Limitations & Scope
+
+The present implementation is optimized for **single-FOV analysis**:
+
+- **One FOV per run**: Scripts are designed to analyze a single field-of-view at a time to manage memory and complexity
+- **Requires pre-computed cell matches**: The analysis script expects `results/tables/cell_matches.csv` from step 2 (02_match_cells.py)
+- **Polygon geometry optional**: Geometry metrics require Shapely library and polygon vertex data. If unavailable, those metrics return None
+- **Method-specific identifiers**: Cell and molecule IDs are method-specific. Correspondences are established via the cell_matches graph
+- **No model training**: This version does not train classifiers or uncertainty models, only detects and measures disagreement
+- **Spatial matching tolerance**: Set to 1.5 μm by default; may need adjustment for different tissue types
+
+### Not Yet Implemented (Whole-Slide Scaling)
+
+- Chunked processing for whole-slide datasets
+- Streaming/memory-mapped data access
+- Batch processing scripts
+- Aggregation of per-FOV results across slide
+- Slide-level uncertainty maps
+
+These are deferred to a future version after single-FOV validation is complete.
 
 While this first version focuses on transparent, decomposed metrics, future versions may add:
 - Cell morphology analysis
