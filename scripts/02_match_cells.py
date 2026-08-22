@@ -3,7 +3,7 @@
 Match cells between AtoMx and Proseg segmentations.
 
 This script identifies corresponding cells across segmentation methods
-and classifies relationship types (one-to-one, splits, merges).
+and classifies relationship types (one-to-one, splits, merges, lost, new, complex).
 """
 
 import argparse
@@ -24,12 +24,48 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def filter_by_fov(
+    df: pd.DataFrame,
+    fov: str,
+    fov_col: str = "fov",
+    logger=None
+) -> pd.DataFrame:
+    """Filter data by FOV.
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Data to filter.
+    fov : str
+        FOV identifier to keep.
+    fov_col : str
+        FOV column name.
+    logger : logging.Logger, optional
+        Logger instance.
+    
+    Returns
+    -------
+    pd.DataFrame
+        Filtered data.
+    """
+    if fov_col in df.columns:
+        df_fov = df[df[fov_col] == fov].copy()
+        if logger:
+            logger.info(f"Filtered to FOV {fov}: {len(df_fov)} rows")
+        return df_fov
+    else:
+        if logger:
+            logger.warning(f"FOV column '{fov_col}' not found, using all data")
+        return df
+
+
 def match_cells_main(
     atomx_root: str,
     atomx_files: dict,
     proseg_root: str,
     proseg_files: dict,
     output_dir: str,
+    fov: str = None,
     distance_threshold: float = 10.0,
     logger=None,
 ) -> dict:
@@ -93,6 +129,39 @@ def match_cells_main(
             elif "y" in col.lower() and proseg_coords["y"] is None:
                 proseg_coords["y"] = col
     
+    # Filter by FOV if specified
+    if fov:
+        logger.info(f"\n--- Filtering to FOV {fov} ---")
+        atomx_meta = filter_by_fov(atomx_meta, fov, logger=logger)
+        proseg_meta = filter_by_fov(proseg_meta, fov, logger=logger)
+        if len(atomx_meta) == 0 or len(proseg_meta) == 0:
+            logger.error(f"No data found for FOV {fov}")
+            return result
+    
+    # Parse polygons if available
+    logger.info("\n--- Parsing Polygons ---")
+    atomx_polygons = {}
+    proseg_polygons = {}
+    
+    if atomx_data["polygons"] is not None:
+        atomx_polygons = cells.parse_polygons(
+            atomx_data["polygons"],
+            cell_id_col=atomx_cell_id_col,
+            geometry_col="geometry",
+            logger=logger
+        )
+    
+    # For Proseg, check if polygon data available in uns or obsm
+    if hasattr(proseg_h5ad, "uns") and "polygons" in proseg_h5ad.uns:
+        proseg_poly_data = proseg_h5ad.uns["polygons"]
+        if isinstance(proseg_poly_data, pd.DataFrame):
+            proseg_polygons = cells.parse_polygons(
+                proseg_poly_data,
+                cell_id_col="proseg_cell_id",
+                geometry_col="geometry",
+                logger=logger
+            )
+    
     # Match cells
     logger.info("\n--- Matching Cells ---")
     
@@ -109,18 +178,20 @@ def match_cells_main(
             proseg_coords=proseg_coords,
             atomx_cell_id=atomx_cell_id_col,
             proseg_cell_id="proseg_cell_id",
+            atomx_polygons=atomx_polygons if atomx_polygons else None,
+            proseg_polygons=proseg_polygons if proseg_polygons else None,
             distance_threshold=distance_threshold,
             logger=logger,
         )
         
         result["matches"] = matches_df
         
-        # Identify split/merge relationships
+        # Identify split/merge relationships (legacy)
         logger.info("\n--- Identifying Split/Merge Events ---")
         relationships = cells.identify_split_merges(
             matches_df,
-            atomx_cell_id="atomx_cell",
-            proseg_cell_id="proseg_cell",
+            atomx_cell_id=atomx_cell_id_col,
+            proseg_cell_id="proseg_cell_id",
             logger=logger,
         )
         
@@ -130,16 +201,42 @@ def match_cells_main(
         logger.info("\n--- Saving Results ---")
         os.makedirs(output_dir, exist_ok=True)
         
-        matches_file = os.path.join(output_dir, "cell_matches.csv")
-        matches_df.to_csv(matches_file, index=False)
-        logger.info(f"Saved cell matches to: {matches_file}")
+        # Add FOV to results if available
+        if atomx_coords.get("fov"):
+            if len(atomx_meta) > 0:
+                atomx_fov = atomx_meta[atomx_coords["fov"]].iloc[0]
+                matches_df["fov"] = atomx_fov
         
+        # CSV format
+        matches_file_csv = os.path.join(output_dir, "cell_matches.csv.gz")
+        matches_df.to_csv(matches_file_csv, index=False, compression="gzip")
+        logger.info(f"Saved cell matches (CSV) to: {matches_file_csv}")
+        
+        # Parquet format
+        matches_file_parquet = os.path.join(output_dir, "cell_matches.parquet")
+        matches_df.to_parquet(matches_file_parquet, index=False)
+        logger.info(f"Saved cell matches (Parquet) to: {matches_file_parquet}")
+        
+        # Relationships JSON
         relationships_file = os.path.join(output_dir, "cell_relationships.json")
         with open(relationships_file, "w") as f:
-            json.dump(
-                relationships, f, indent=2, default=str
-            )
+            json.dump(relationships, f, indent=2, default=str)
         logger.info(f"Saved cell relationships to: {relationships_file}")
+        
+        # Summary stats
+        logger.info("\n--- Summary Statistics ---")
+        logger.info(f"Total cells in correspondence: {len(matches_df)}")
+        if "relationship_type" in matches_df.columns:
+            rel_counts = matches_df["relationship_type"].value_counts()
+            logger.info("Relationship type counts:")
+            for rel_type, count in rel_counts.items():
+                logger.info(f"  {rel_type}: {count}")
+        
+        if "iou" in matches_df.columns:
+            one_to_one = matches_df[matches_df.get("relationship_type") == "one_to_one"]
+            if len(one_to_one) > 0:
+                median_iou = one_to_one["iou"].median()
+                logger.info(f"Median IoU (one-to-one): {median_iou:.4f}")
     
     logger.info("=" * 80)
     logger.info("CELL MATCHING COMPLETE")
@@ -164,6 +261,12 @@ def main():
         type=str,
         default="33710_32578_37826_37374_36135",
         help="Dataset ID",
+    )
+    parser.add_argument(
+        "--fov",
+        type=str,
+        default=None,
+        help="FOV identifier (optional)",
     )
     parser.add_argument(
         "--output-root",
@@ -197,6 +300,7 @@ def main():
     logger.info("Starting cell matching")
     logger.info(f"Config: {args.config}")
     logger.info(f"Dataset ID: {args.dataset_id}")
+    logger.info(f"FOV: {args.fov}")
     logger.info(f"Distance threshold: {args.distance_threshold}")
     
     # Load configuration
@@ -210,6 +314,7 @@ def main():
         proseg_root=dataset_config["proseg"]["root"],
         proseg_files=dataset_config["proseg"],
         output_dir=os.path.join(args.output_root, "tables"),
+        fov=args.fov,
         distance_threshold=args.distance_threshold,
         logger=logger,
     )
