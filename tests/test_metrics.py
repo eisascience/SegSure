@@ -210,8 +210,8 @@ class TestJaccardSimilarity:
             "p1": ["p2", "p3"],
         }
         cell_matches = pd.DataFrame({
-            "atomx_cell": ["c1"],
-            "proseg_cell": ["p1"],
+            "atomx_cell": ["c1", "c2", "c3"],
+            "proseg_cell": ["p1", "p2", "p3"],
         })
         
         jaccard = neighborhood.compute_mapped_neighbor_jaccard(
