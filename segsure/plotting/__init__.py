@@ -1,5 +1,5 @@
 """Visualization modules for SegSure."""
 
-from . import neighborhood, spatial
+from . import cell_correspondence, neighborhood, spatial
 
-__all__ = ["spatial", "neighborhood"]
+__all__ = ["spatial", "neighborhood", "cell_correspondence"]
