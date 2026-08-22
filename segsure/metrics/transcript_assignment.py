@@ -6,6 +6,136 @@ import numpy as np
 import pandas as pd
 
 
+def compute_molecule_level_status_summary(
+    molecules_df: pd.DataFrame,
+    logger=None
+) -> Dict:
+    """Compute summary statistics from molecule-level status classifications.
+    
+    Parameters
+    ----------
+    molecules_df : pd.DataFrame
+        Molecule-level data with 'status' column from MoleculeTracker.
+    logger : logging.Logger, optional
+        Logger instance.
+    
+    Returns
+    -------
+    dict
+        Summary with keys:
+        - total_molecules
+        - status distribution (count and fraction for each status)
+        - n_consistent (same_matched_cell)
+        - n_changed (all other statuses except unresolved)
+        - n_unresolved
+    """
+    if molecules_df.empty:
+        return {}
+    
+    total = len(molecules_df)
+    status_counts = molecules_df["status"].value_counts()
+    
+    summary = {
+        "total_molecules": total,
+        "status_distribution": status_counts.to_dict(),
+    }
+    
+    # Key summaries
+    same_matched = status_counts.get("same_matched_cell", 0)
+    changed_neighbor = status_counts.get("changed_neighbor", 0)
+    split_related = status_counts.get("split_related", 0)
+    merge_related = status_counts.get("merge_related", 0)
+    atomx_only = status_counts.get("atomx_assigned_proseg_unassigned", 0)
+    proseg_only = status_counts.get("atomx_unassigned_proseg_assigned", 0)
+    unrelated = status_counts.get("changed_unrelated", 0)
+    unresolved = status_counts.get("unresolved", 0)
+    
+    # Aggregated counts
+    n_consistent = same_matched
+    n_changed = (
+        changed_neighbor + split_related + merge_related +
+        atomx_only + proseg_only + unrelated
+    )
+    
+    summary["n_consistent"] = n_consistent
+    summary["n_changed"] = n_changed
+    summary["n_unresolved"] = unresolved
+    summary["fraction_consistent"] = n_consistent / total if total > 0 else 0
+    summary["fraction_changed"] = n_changed / total if total > 0 else 0
+    
+    if logger:
+        logger.info(f"Molecule-level summary: {n_consistent}/{total} consistent")
+        logger.info(f"  Status distribution: {status_counts.to_dict()}")
+    
+    return summary
+
+
+def compute_cell_level_transcript_summary(
+    molecules_df: pd.DataFrame,
+    cell_assignment_col: str = "atomx_cell",
+    logger=None
+) -> pd.DataFrame:
+    """Compute cell-level transcript assignment summaries.
+    
+    Parameters
+    ----------
+    molecules_df : pd.DataFrame
+        Molecule-level data with cell assignment and status columns.
+    cell_assignment_col : str, optional
+        Column name for cell assignments (default "atomx_cell").
+    logger : logging.Logger, optional
+        Logger instance.
+    
+    Returns
+    -------
+    pd.DataFrame
+        Cell-level summaries with columns:
+        - cell_id
+        - n_molecules
+        - n_consistent
+        - n_changed
+        - n_unresolved
+        - fraction_changed
+        - status breakdown (one column per status)
+    """
+    if molecules_df.empty:
+        return pd.DataFrame()
+    
+    results = []
+    
+    for cell_id in molecules_df[cell_assignment_col].unique():
+        cell_mols = molecules_df[molecules_df[cell_assignment_col] == cell_id]
+        
+        total = len(cell_mols)
+        status_counts = cell_mols["status"].value_counts()
+        
+        consistent = status_counts.get("same_matched_cell", 0)
+        changed = total - consistent - status_counts.get("unresolved", 0)
+        unresolved = status_counts.get("unresolved", 0)
+        
+        row = {
+            "cell_id": cell_id,
+            "n_molecules": total,
+            "n_consistent": consistent,
+            "n_changed": changed,
+            "n_unresolved": unresolved,
+            "fraction_changed": changed / total if total > 0 else 0,
+        }
+        
+        # Add status breakdown
+        for status in status_counts.index:
+            row[f"n_{status}"] = status_counts[status]
+        
+        results.append(row)
+    
+    result_df = pd.DataFrame(results)
+    
+    if logger:
+        logger.info(f"Computed cell-level summaries for {len(result_df)} cells")
+    
+    return result_df
+
+
 def compute_transcript_overlap_metrics(
     assignment_comparisons: pd.DataFrame,
     logger=None
